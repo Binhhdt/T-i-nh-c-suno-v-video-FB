@@ -23,6 +23,8 @@ jobs:
           ls -la
           ls android/app/src/main/AndroidManifest.xml
           ls pubspec.yaml lib/main.dart
+          chmod +x android/gradlew
+          head -3 android/gradlew
 
       - uses: actions/setup-java@v4
         with:
