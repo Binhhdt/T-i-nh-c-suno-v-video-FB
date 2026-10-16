@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -10,6 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Nếu repo có file source.zip (mã nguồn đầy đủ) thì giải nén ra,
+      # ghi đè lên file cũ -> luôn đủ thư mục android/, lib/, pubspec.yaml.
+      - name: Giải nén source.zip
+        run: |
+          if [ -f source.zip ]; then
+            unzip -o -q source.zip -d .
+            echo "Đã giải nén source.zip"
+          fi
+          echo "--- Kiểm tra file quan trọng ---"
+          ls -la
+          ls android/app/src/main/AndroidManifest.xml
+          ls pubspec.yaml lib/main.dart
 
       - uses: actions/setup-java@v4
         with:
