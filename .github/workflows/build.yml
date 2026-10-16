@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -54,7 +57,12 @@ jobs:
         continue-on-error: true
       - run: flutter build apk --release
 
-      - uses: actions/upload-artifact@v4
+      # Đưa APK lên mục Releases (không tốn dung lượng Artifacts).
+      - name: Đổi tên APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk "TaiVideoNhac-v${{ github.run_number }}.apk"
+
+      - uses: softprops/action-gh-release@v2
         with:
-          name: fb-video-downloader-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          tag_name: build-${{ github.run_number }}
+          name: APK build ${{ github.run_number }}
+          files: TaiVideoNhac-v${{ github.run_number }}.apk
