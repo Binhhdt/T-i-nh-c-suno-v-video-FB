@@ -47,9 +47,14 @@ class AlbumInfo {
     required this.pageUrl,
     this.title,
     this.declaredCount,
+    this.setId,
   });
 
   final List<AlbumPhoto> photos;
+
+  /// Bộ ảnh của bài ("pcb.<id bài>") — để mở trang bộ ảnh lấy nốt ảnh
+  /// khi dữ liệu bài viết chỉ có một phần.
+  final String? setId;
 
   /// Trang bài viết/album thật (sau khi đã giải link share).
   final String pageUrl;
@@ -355,7 +360,12 @@ class FacebookAlbumExtractor {
     // Bài có nhiều ảnh hơn số lấy được ("+5" trên lưới ảnh) -> mở trang
     // bộ ảnh của bài (set=pcb.<id bài>) để lấy nốt.
     final declared = info.declaredCount ?? 0;
-    final postId = postIdFromHtml(page.body);
+    // Bộ ảnh của bài: ưu tiên "pcb.<id>" xuất hiện nhiều nhất trên trang
+    // (link các ảnh của bài đều có set=pcb.<id bài>).
+    final dominant = dominantPcbSet(page.body);
+    final postId = dominant != null
+        ? dominant.substring(4)
+        : postIdFromHtml(page.body);
     if (postId != null &&
         (declared > info.photos.length || info.photos.isEmpty)) {
       onStatus?.call('Đang lấy thêm ảnh của bài...');
@@ -384,8 +394,89 @@ class FacebookAlbumExtractor {
         'Không tìm thấy ảnh trong bài viết này.',
       );
     }
-    return info;
+    return AlbumInfo(
+      photos: info.photos,
+      pageUrl: info.pageUrl,
+      title: info.title,
+      declaredCount: info.declaredCount,
+      setId: postId != null ? 'pcb.$postId' : setFromUrl(info.pageUrl),
+    );
   }
+
+  /// "pcb.<id>" xuất hiện nhiều nhất trong HTML (bộ ảnh của bài chính).
+  static String? dominantPcbSet(String html) {
+    final freq = <String, int>{};
+    for (final m in RegExp(r'pcb\.(\d{5,})').allMatches(html)) {
+      final k = m.group(1)!;
+      freq[k] = (freq[k] ?? 0) + 1;
+    }
+    if (freq.isEmpty) return null;
+    final best = (freq.entries.toList()
+          ..sort((a, b) => b.value.compareTo(a.value)))
+        .first
+        .key;
+    return 'pcb.$best';
+  }
+
+  /// id ảnh KẾ TIẾP trong trình xem ảnh (dữ liệu trang ảnh lẻ).
+  static String? nextPhotoIdFromHtml(String html, String currentId) {
+    final patterns = [
+      RegExp(r'"nextMediaAfterNodeId"\s*:\s*\{[^{}]*?"id"\s*:\s*"(\d+)"'),
+      RegExp(r'"next_media"\s*:\s*\{[^{}]*?"id"\s*:\s*"(\d+)"'),
+      RegExp(
+        r'"nextMedia"\s*:\s*\{\s*"edges"\s*:\s*\[\s*\{\s*"node"\s*:\s*'
+        r'\{[^{}]*?"id"\s*:\s*"(\d+)"',
+      ),
+    ];
+    for (final p in patterns) {
+      for (final m in p.allMatches(html)) {
+        final id = m.group(1)!;
+        if (id != currentId) return id;
+      }
+    }
+    return null;
+  }
+
+  /// Duyệt trình xem ảnh của bộ ảnh [setId] qua mạng: mở ảnh [startId],
+  /// lấy bản lớn nhất của ảnh đó, đọc id ảnh kế tiếp, lặp lại đến khi
+  /// quay về ảnh đã gặp / đủ [maxCount] ảnh / không còn ảnh kế tiếp.
+  /// Mỗi ảnh chỉ nhận khi tên file chứa đúng fbid (không lấy nhầm).
+  Future<List<AlbumPhoto>> walkPhotoSet({
+    required String startId,
+    required String setId,
+    required int maxCount,
+    String? cookieHeader,
+    void Function(int found)? onProgress,
+  }) async {
+    final out = <AlbumPhoto>[];
+    final visited = <String>{};
+    var id = startId;
+    var misses = 0;
+    while (visited.length < maxCount + 2 && visited.add(id)) {
+      final r = await _get(
+        'https://www.facebook.com/photo/?fbid=$id&set=$setId',
+        cookieHeader: cookieHeader,
+      );
+      if (r.status != 200 || isHomeOrFeedUrl(r.finalUrl)) break;
+      final p = bestImageForPhotoId(r.body, id);
+      if (p != null) {
+        out.add(p);
+        misses = 0;
+      } else if (++misses >= 3) {
+        break;
+      }
+      onProgress?.call(out.length);
+      if (out.length >= maxCount) break;
+      final next = nextPhotoIdFromHtml(r.body, id);
+      if (next == null) break;
+      id = next;
+    }
+    return out;
+  }
+
+  /// Link trang bộ ảnh (lưới tất cả ảnh) của một set.
+  static String setPageUrl(String setId) =>
+      'https://www.facebook.com/media/set/?set=$setId&type=3';
 
   /// Mở trang ảnh lẻ để lấy bản lớn nhất của ảnh [photo].
   /// Chỉ nhận ảnh có tên file chứa đúng fbid của ảnh (không lấy nhầm).
@@ -494,13 +585,17 @@ class FacebookAlbumExtractor {
           if (p != null) photos.add(p);
         }
         if (photos.isEmpty) continue;
+        final unique = dedupePhotos(photos);
+        photos
+          ..clear()
+          ..addAll(unique);
         final c = block['count'];
         if (main == null) {
           main = photos;
           if (c is int) count = c;
         } else {
-          final ids = main.map((p) => p.id).toSet();
-          if (photos.any((p) => ids.contains(p.id))) {
+          final ids = main.expand(photoKeys).toSet();
+          if (photos.any((p) => photoKeys(p).any(ids.contains))) {
             main = mergePhotos(main, photos);
             if (c is int && (count == null || c > count)) count = c;
           }
@@ -582,6 +677,22 @@ class FacebookAlbumExtractor {
     final mine = images
         .where((i) => isContentPhotoUrl(i.url) && fbidFromImageUrl(i.url) == id)
         .toList();
+    if (mine.isEmpty) {
+      // Tên file ảnh KHÔNG phải lúc nào cũng chứa fbid -> lấy ảnh lớn nằm
+      // ngay cạnh "id":"<fbid>" trong dữ liệu trang (object Photo của ảnh).
+      final idRe = RegExp('"id"\\s*:\\s*"${RegExp.escape(id)}"');
+      for (final m in idRe.allMatches(html)) {
+        final from = m.start > 4000 ? m.start - 4000 : 0;
+        final to = m.end + 4000 < html.length ? m.end + 4000 : html.length;
+        mine.addAll(
+          parseImageObjects(html.substring(from, to)).where(
+            (i) =>
+                isContentPhotoUrl(i.url) &&
+                _side(i.url, i.width, i.height) >= 300,
+          ),
+        );
+      }
+    }
     if (mine.isEmpty) return null;
     mine.sort(
       (a, b) =>
@@ -725,30 +836,86 @@ class FacebookAlbumExtractor {
   // Tiện ích
   // ---------------------------------------------------------------------
 
-  /// Gộp 2 danh sách ảnh theo id, giữ bản lớn hơn, giữ thứ tự.
+  /// Các "khoá nhận dạng" của 1 ảnh: id + fbid trong tên file + tên file
+  /// trên CDN (của cả bản lớn và bản nhỏ). Hai ảnh có CHUNG BẤT KỲ khoá
+  /// nào là cùng 1 ảnh — kể cả khi 2 nguồn (dữ liệu bài viết / lưới ảnh
+  /// trong WebView) đặt id khác nhau cho cùng 1 ảnh (lỗi ảnh 1-5 lặp lại
+  /// thành ảnh 6-10).
+  static Set<String> photoKeys(AlbumPhoto p) {
+    final keys = <String>{p.id};
+    for (final u in [p.url, p.thumbUrl]) {
+      if (!isContentPhotoUrl(u)) continue; // ảnh giữ chỗ -> không dùng
+      final f = fbidFromImageUrl(u);
+      if (f != null) keys.add(f);
+      keys.add(photoKey(u));
+    }
+    return keys;
+  }
+
+  /// Gộp 2 danh sách ảnh, BỎ ẢNH TRÙNG (theo mọi khoá nhận dạng), giữ
+  /// bản lớn hơn, giữ thứ tự xuất hiện đầu tiên và id của lần đầu.
   static List<AlbumPhoto> mergePhotos(
     List<AlbumPhoto> a,
     List<AlbumPhoto> b,
   ) {
-    final map = <String, AlbumPhoto>{};
-    final order = <String>[];
+    final out = <AlbumPhoto>[];
+    final keyToIndex = <String, int>{};
     for (final p in [...a, ...b]) {
-      final existing = map[p.id];
-      if (existing == null) {
-        map[p.id] = p;
-        order.add(p.id);
-      } else if (_area(p.url, p.width, p.height) >
-          _area(existing.url, existing.width, existing.height)) {
-        map[p.id] = AlbumPhoto(
-          id: p.id,
-          url: p.url,
-          thumbUrl: existing.thumbUrl,
-          width: p.width,
-          height: p.height,
-        );
+      final keys = photoKeys(p);
+      int? idx;
+      for (final k in keys) {
+        final i = keyToIndex[k];
+        if (i != null) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx == null) {
+        out.add(p);
+        idx = out.length - 1;
+      } else {
+        final e = out[idx];
+        if (_area(p.url, p.width, p.height) >
+            _area(e.url, e.width, e.height)) {
+          out[idx] = AlbumPhoto(
+            id: e.id,
+            url: p.url,
+            thumbUrl: e.thumbUrl,
+            width: p.width,
+            height: p.height,
+          );
+        }
+      }
+      for (final k in keys) {
+        keyToIndex[k] = idx;
       }
     }
-    return [for (final id in order) map[id]!];
+    return out;
+  }
+
+  /// Bỏ ảnh trùng trong 1 danh sách.
+  static List<AlbumPhoto> dedupePhotos(List<AlbumPhoto> list) =>
+      mergePhotos(list, const []);
+
+  /// Số bit khác nhau giữa 2 mã "vân tay" ảnh (dHash). Nhỏ = giống nhau.
+  static int hammingDistance(List<int> a, List<int> b) {
+    if (a.length != b.length) return 1 << 30;
+    var d = 0;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) d++;
+    }
+    return d;
+  }
+
+  /// dHash từ ảnh xám (w x h, w = cột + 1): so mỗi điểm với điểm bên phải.
+  static List<int> dHashFromGray(List<int> gray, int width, int height) {
+    final bits = <int>[];
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width - 1; x++) {
+        bits.add(gray[y * width + x] < gray[y * width + x + 1] ? 1 : 0);
+      }
+    }
+    return bits;
   }
 
   /// Ảnh nội dung (ảnh đăng lên) — loại ảnh đại diện, icon, emoji,

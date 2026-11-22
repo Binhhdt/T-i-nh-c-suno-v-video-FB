@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -10,8 +12,11 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import 'album_extractor.dart';
 import 'audio_converter.dart';
+import 'comic/comic_tab.dart';
 import 'downloader.dart';
 import 'neon_theme.dart';
+import 'pdf_maker.dart';
+import 'pdf_tab.dart';
 import 'save_folder.dart';
 import 'save_folder_card.dart';
 import 'session.dart';
@@ -41,9 +46,11 @@ class FbVideoDownloaderApp extends StatelessWidget {
 
 enum _Stage { idle, fetching, found, downloading, decrypting, converting, done, error }
 
-/// Màn hình chính: 3 tab — "Video FB" (tải video Facebook),
-/// "Nhạc Suno" (tải nhạc Suno, convert MP3/WAV trên máy) và
-/// "Album FB" (tải ảnh bài viết nhiều ảnh / album Facebook).
+/// Màn hình chính: 5 tab — "Video FB" (tải video Facebook),
+/// "Nhạc Suno" (tải nhạc Suno, convert MP3/WAV trên máy),
+/// "Album FB" (tải ảnh bài viết nhiều ảnh / album Facebook) và
+/// "Truyện" (tải ảnh trang chapter từ link người dùng nhập) và
+/// "PDF" (chọn ảnh trong máy -> ghép thành PDF).
 /// Cài đặt "Thư mục lưu" có ở CẢ 2 tab (widget dùng chung) và dùng
 /// chung resolver thư mục lưu.
 class DownloaderPage extends StatelessWidget {
@@ -52,16 +59,21 @@ class DownloaderPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const GradientText('Tải Video & Nhạc'),
           centerTitle: true,
+          // 5 tab -> cho cuộn ngang để chữ không bị cắt.
           bottom: const TabBar(
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
             tabs: [
               Tab(text: 'Video FB'),
               Tab(text: 'Nhạc Suno'),
               Tab(text: 'Album FB'),
+              Tab(text: 'Truyện'),
+              Tab(text: 'PDF'),
             ],
           ),
         ),
@@ -70,6 +82,8 @@ class DownloaderPage extends StatelessWidget {
             _FacebookTab(),
             _SunoTab(),
             _AlbumTab(),
+            ComicTab(),
+            PdfTab(),
           ],
         ),
       ),
