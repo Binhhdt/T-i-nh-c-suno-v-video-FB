@@ -305,6 +305,47 @@ void main() {
     expect(await result.length(), mp4.length + extra);
   });
 
+  test(
+    'downloads a 30-minute MP4 without an overall transfer timeout',
+    () async {
+      final video = '${fixture.path}/long.mp4';
+      await _ffmpeg([
+        '-f',
+        'lavfi',
+        '-i',
+        'color=blue:size=32x32:rate=1/10',
+        '-t',
+        '1800',
+        '-c:v',
+        'libx264',
+        '-threads',
+        '1',
+        video,
+      ]);
+      final source = File(video);
+      final length = await source.length();
+      final result = await download(
+        (_) async => http.StreamedResponse(
+          source.openRead(),
+          200,
+          contentLength: length,
+        ),
+        source: const VideoCandidate(url: _url, hasAudio: false),
+      );
+      final duration = await Process.run('ffprobe', [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        result.path,
+      ]);
+      expect(duration.exitCode, 0);
+      expect(double.parse((duration.stdout as String).trim()), 1800);
+    },
+  );
+
   test('reports an out-of-space write without reporting success', () async {
     final full = File('/dev/full');
     expect(await full.exists(), isTrue);
