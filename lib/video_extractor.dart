@@ -1,284 +1,428 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
-/// Một ứng viên file video mp4 tìm được trong HTML của trang Facebook.
-class VideoCandidate {
-  final String url;
-  final String qualityLabel;
-  final int qualityScore;
+import 'facebook_video_http.dart';
+import 'video_manifest.dart';
+import 'video_mp4_metadata.dart';
+import 'video_source.dart';
 
-  const VideoCandidate({
-    required this.url,
-    required this.qualityLabel,
-    required this.qualityScore,
-  });
-}
+export 'video_source.dart' show VideoCandidate, VideoSourceKind;
 
-/// Kết quả trích xuất: danh sách video + ảnh thumbnail (nếu có)
-/// + tiêu đề video (nếu lấy được, dùng làm tên file khi tải).
 class VideoInfo {
+  const VideoInfo({required this.candidates, this.thumbnailUrl, this.title});
   final List<VideoCandidate> candidates;
   final String? thumbnailUrl;
   final String? title;
-
-  const VideoInfo({required this.candidates, this.thumbnailUrl, this.title});
-
   VideoCandidate get best => candidates.first;
 }
 
-class VideoNotFoundException implements Exception {
-  final String message;
-  const VideoNotFoundException(this.message);
+class VideoNotFoundException extends FacebookVideoException {
+  const VideoNotFoundException(super.message);
 }
 
-/// Trích xuất video Facebook.
-/// Khi [cookieHeader] có giá trị (đã đăng nhập trong WebView), gắn vào
-/// request để tải được cả video không công khai mà tài khoản được xem.
-/// Khi không đăng nhập, fetch không cookie như v1 (chỉ video công khai).
 class FacebookVideoExtractor {
-  /// Header trình duyệt đầy đủ: Facebook chặn request thiếu header
-  /// (trả 400 ngay cả với User-Agent desktop).
-  static const _headers = {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/126.0.0.0 Safari/537.36',
-    'Accept':
-        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
-    'Upgrade-Insecure-Requests': '1',
-  };
-
-  final http.Client _client;
-
   FacebookVideoExtractor({http.Client? client})
-      : _client = client ?? http.Client();
+    : _network = FacebookVideoHttp(client);
 
-  /// Chuẩn hoá link người dùng dán vào.
+  final FacebookVideoHttp _network;
+
   String normalizeUrl(String raw) {
-    var url = raw.trim();
-    if (url.isEmpty) {
+    final input = raw.trim();
+    if (input.isEmpty) {
       throw const VideoNotFoundException('Bạn chưa nhập link video.');
     }
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://$url';
-    }
-    final uri = Uri.tryParse(url);
-    if (uri == null || uri.host.isEmpty) {
-      throw const VideoNotFoundException('Link không hợp lệ.');
-    }
-    return url;
-  }
-
-  /// Tải HTML trang Facebook và tìm link mp4 trực tiếp.
-  /// [cookieHeader] là header `Cookie` từ phiên đăng nhập WebView
-  /// (chỉ dùng trong bộ nhớ, không lưu trữ).
-  Future<VideoInfo> extract(String rawUrl, {String? cookieHeader}) async {
-    final url = normalizeUrl(rawUrl);
-    late final http.Response response;
-    final headers = Map<String, String>.from(_headers);
-    if (cookieHeader != null && cookieHeader.isNotEmpty) {
-      headers['Cookie'] = cookieHeader;
-    }
-    try {
-      response = await _client
-          .get(Uri.parse(url), headers: headers)
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      throw const VideoNotFoundException(
-        'Không tải được trang Facebook. Kiểm tra mạng và thử lại.',
-      );
-    }
-    if (response.statusCode != 200) {
-      throw const VideoNotFoundException(
-        'Không tìm thấy video. Có thể video riêng tư hoặc cần đăng nhập.',
-      );
-    }
-    return parseHtml(response.body);
-  }
-
-  /// Phân tích HTML (tách riêng để test được mà không cần mạng).
-  VideoInfo parseHtml(String html) => _parse(html);
-
-  /// Phân tích trang đã render trong WebView: HTML sau khi JS chạy +
-  /// src của các thẻ <video> trong DOM. Src từ DOM được ưu tiên vì đó
-  /// là video trình duyệt đang phát thật (HTML thô của Facebook không
-  /// chứa link mp4 do trang render bằng JS).
-  VideoInfo parseRenderedPage(String html, List<String> videoSrcs) =>
-      _parse(html, extraUrls: videoSrcs);
-
-  VideoInfo _parse(String html, {List<String> extraUrls = const []}) {
-    final unescaped = _unescapeFacebookHtml(html);
-
-    final candidates = <VideoCandidate>[];
-    final seen = <String>{};
-
-    void addCandidate(String rawUrl) {
-      final decoded = _fullyDecode(rawUrl);
-      if (!decoded.startsWith('http')) return;
-      if (!decoded.contains('.mp4')) return;
-      if (!seen.add(decoded)) return; // trùng -> bỏ
-      candidates.add(VideoCandidate(
-        url: decoded,
-        qualityLabel: _qualityLabel(decoded),
-        qualityScore: _qualityScore(decoded),
-      ));
-    }
-
-    // 0. Src từ thẻ <video> trong DOM đã render (đáng tin nhất).
-    for (final u in extraUrls) {
-      addCandidate(u);
-    }
-
-    // 1. Ưu tiên thẻ og:video (link video chính của trang).
-    final ogVideo = _metaProperty(unescaped, 'og:video');
-    if (ogVideo != null) addCandidate(ogVideo);
-
-    // 2. Quét mọi link mp4 trong HTML.
-    final mp4Pattern = RegExp(r'https?://\S+?\.mp4\S*');
-    final allMp4 = <String>[];
-    for (final m in mp4Pattern.allMatches(unescaped)) {
-      final cleaned = _cleanUrl(m.group(0)!);
-      if (cleaned.contains('.mp4')) allMp4.add(cleaned);
-    }
-    // Ưu tiên link fbcdn / scontent.
-    for (final u in allMp4) {
-      if (u.contains('fbcdn') || u.contains('scontent')) addCandidate(u);
-    }
-
-    // 3. Fallback: mọi link mp4 bất kỳ trong HTML.
-    if (candidates.isEmpty) {
-      for (final u in allMp4) {
-        addCandidate(u);
-      }
-    }
-
-    if (candidates.isEmpty) {
-      throw const VideoNotFoundException(
-        'Không tìm thấy video. Có thể video riêng tư hoặc cần đăng nhập.',
-      );
-    }
-
-    // Sắp xếp: chất lượng cao nhất lên đầu.
-    candidates.sort((a, b) => b.qualityScore.compareTo(a.qualityScore));
-
-    final thumbnail = _metaProperty(unescaped, 'og:image');
-    return VideoInfo(
-      candidates: candidates,
-      thumbnailUrl: thumbnail,
-      title: _extractTitle(unescaped),
-    );
-  }
-
-  /// Tiêu đề video để đặt tên file: og:title -> <title> -> og:description
-  /// (dòng đầu, thường là caption). Bỏ hậu tố " | Facebook", bỏ tiêu đề
-  /// chung chung ("Facebook") vì đặt tên file bằng nó không có nghĩa.
-  /// Trả về null nếu không lấy được tiêu đề có nghĩa.
-  String? _extractTitle(String html) {
-    String? clean(String? raw) {
-      if (raw == null) return null;
-      var t = raw.trim();
-      // Bỏ hậu tố dạng " | Facebook" / " - Facebook".
-      t = t.replaceAll(RegExp(r'\s*[|\-–—]\s*Facebook\s*$'), '').trim();
-      if (t.isEmpty) return null;
-      if (t.toLowerCase() == 'facebook') return null;
-      return t;
-    }
-
-    final ogTitle = clean(_metaProperty(html, 'og:title'));
-    if (ogTitle != null) return ogTitle;
-
-    final titleMatch = RegExp(
-      r'<title>([^<]+)</title>',
+    final shared = RegExp(
+      r'https?://[^\s<>]+',
       caseSensitive: false,
-    ).firstMatch(html);
-    final pageTitle = clean(
-      titleMatch?.group(1)?.replaceAll(RegExp(r'\s+'), ' '),
+    ).firstMatch(input)?.group(0);
+    final url = shared ?? (input.contains('://') ? input : 'https://$input');
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasPort &&
+            uri.port != 443 &&
+            !(uri.scheme == 'http' && uri.port == 80) ||
+        !{'http', 'https'}.contains(uri.scheme)) {
+      throw const VideoNotFoundException('Link Facebook không hợp lệ.');
+    }
+    final secure = uri.replace(scheme: 'https', port: 443).removeFragment();
+    if (!isFacebookPage(secure)) {
+      throw const VideoNotFoundException('Chỉ hỗ trợ liên kết video Facebook.');
+    }
+    return secure.toString();
+  }
+
+  Future<VideoInfo> extract(
+    String rawUrl, {
+    String? cookieHeader,
+    Future<void>? abort,
+  }) async {
+    final url = Uri.parse(normalizeUrl(rawUrl));
+    final response = await _network.read(
+      url,
+      page: true,
+      cookie: cookieHeader,
+      limit: 12 * 1024 * 1024,
+      abort: abort,
     );
-    if (pageTitle != null) return pageTitle;
+    return _complete(
+      _parse(FacebookVideoHttp.text(response.bytes), page: response.uri),
+      abort: abort,
+    );
+  }
 
-    // Caption (og:description): chỉ lấy dòng đầu.
-    final desc = _metaProperty(html, 'og:description');
-    if (desc != null) {
-      final firstLine = desc.split(RegExp(r'[\r\n]+')).first.trim();
-      final cleaned = clean(firstLine);
-      if (cleaned != null) return cleaned;
+  VideoInfo parseHtml(String html) => _requireVideo(_parse(html));
+  VideoInfo parseRenderedPage(String html, List<String> videoSrcs) =>
+      _requireVideo(
+        _parse(
+          html,
+          rendered: [
+            for (final url in videoSrcs) {'url': url},
+          ],
+        ),
+      );
+
+  Future<VideoInfo> extractRendered(
+    String html,
+    List<Map<String, dynamic>> videos,
+    String page,
+  ) => _complete(
+    _parse(html, rendered: videos, page: Uri.parse(normalizeUrl(page))),
+  );
+
+  void close() => _network.close();
+
+  VideoInfo _requireVideo(VideoInfo info) {
+    if (info.candidates.isEmpty) {
+      throw const VideoNotFoundException(
+        'Không tìm thấy video có thể tải. Video có thể yêu cầu đăng nhập.',
+      );
     }
-    return null;
+    return info;
   }
 
-  /// Cắt ký tự thừa bám ở cuối URL do quét từ HTML
-  /// (dấu ngoặc, phẩy, chấm câu, backslash còn sót).
-  String _cleanUrl(String s) {
-    var out = s.trim();
-    const trailing = '"\'<>\\,.;';
-    while (out.isNotEmpty && trailing.contains(out[out.length - 1])) {
-      out = out.substring(0, out.length - 1);
-    }
-    return out;
-  }
-
-  /// Facebook escape URL trong HTML: \/ và \u0025 (%), \u0026 (&)...
-  String _unescapeFacebookHtml(String html) {
-    var out = html.replaceAll(r'\/', '/');
-    out = out.replaceAll(r'\u0025', '%');
-    out = out.replaceAll(r'\u0026', '&');
-    out = out.replaceAll(r'\u0023', '#');
-    out = out.replaceAll(r'\u003d', '=');
-    out = out.replaceAll('&amp;', '&');
-    return out;
-  }
-
-  /// Giải mã percent-encoding lặp lại (tối đa 2 lần, tránh vòng lặp).
-  String _fullyDecode(String url) {
-    var current = url;
-    for (var i = 0; i < 2; i++) {
+  Future<VideoInfo> _complete(VideoInfo info, {Future<void>? abort}) async {
+    final output = <VideoCandidate>[];
+    FacebookVideoException? lastError;
+    for (final candidate in info.candidates) {
+      if (candidate.video != null || candidate.kind == VideoSourceKind.mp4) {
+        output.add(candidate);
+        continue;
+      }
       try {
-        final decoded = Uri.decodeFull(current);
-        if (decoded == current) break;
-        current = decoded;
+        Future<({String text, Uri uri})> read(Uri uri) async {
+          final data = await _network.read(uri, abort: abort);
+          return (text: FacebookVideoHttp.text(data.bytes), uri: data.uri);
+        }
+
+        final manifest = await read(Uri.parse(candidate.url));
+        output.addAll(
+          candidate.kind == VideoSourceKind.hls
+              ? await hlsCandidates(manifest.text, manifest.uri, read)
+              : dashCandidates(manifest.text, manifest.uri),
+        );
+      } on FacebookVideoException catch (e) {
+        lastError = e;
+      } on FormatException {
+        lastError = const VideoNotFoundException(
+          'Manifest video không hợp lệ.',
+        );
       } catch (_) {
-        break;
+        lastError = const FacebookVideoException(
+          'Không đọc được manifest video.',
+          retryable: true,
+        );
       }
     }
-    return current;
+    if (output.isEmpty && lastError != null) throw lastError;
+    final direct = output
+        .where((item) => item.kind == VideoSourceKind.mp4 && item.video == null)
+        .take(8)
+        .toList();
+    final probes = await Future.wait(
+      direct.map((item) async {
+        final deadline = Completer<void>();
+        final timer = Timer(const Duration(seconds: 5), deadline.complete);
+        final stop = abort == null
+            ? deadline.future
+            : Future.any([abort, deadline.future]);
+        try {
+          final url = Uri.parse(item.url);
+          final result = await probeMp4(_network, url, stop);
+          final metadata = result.metadata;
+          if (metadata?.protected == true) return null;
+          var size = result.size ?? item.bytes;
+          if (size == null) {
+            final head = await _network.send(url, method: 'HEAD', abort: stop);
+            await FacebookVideoHttp.discard(head.response);
+            if (head.response.statusCode == 200 &&
+                head.response.headers['content-type']?.contains('text/html') !=
+                    true) {
+              size = head.response.contentLength;
+            }
+          }
+          return VideoCandidate(
+            url: item.url,
+            variant: item.variant,
+            width: metadata?.width ?? item.width,
+            height: metadata?.height ?? item.height,
+            fps: metadata?.fps ?? item.fps,
+            codec: metadata?.codec ?? item.codec,
+            bitrate: metadata?.bitrate ?? item.bitrate,
+            bytes: size != null && size > 0 ? size : null,
+            hasAudio: metadata?.audio ?? item.hasAudio,
+          );
+        } catch (_) {
+          return item;
+        } finally {
+          timer.cancel();
+        }
+      }),
+    );
+    for (var i = 0; i < direct.length; i++) {
+      final result = probes[i];
+      if (result == null) {
+        output.remove(direct[i]);
+      } else {
+        output[output.indexOf(direct[i])] = result;
+      }
+    }
+    output.sort(VideoCandidate.compare);
+    return _requireVideo(
+      VideoInfo(
+        candidates: output,
+        thumbnailUrl: info.thumbnailUrl,
+        title: info.title,
+      ),
+    );
   }
 
-  /// Lấy nội dung thẻ <meta property="og:xxx" content="..."> (cả 2 thứ tự thuộc tính).
-  String? _metaProperty(String html, String property) {
-    final patterns = [
-      RegExp(
-        '<meta[^>]+property=["\']$property["\'][^>]+content=["\']([^"\']+)["\']',
+  VideoInfo _parse(
+    String html, {
+    List<Map<String, dynamic>> rendered = const [],
+    Uri? page,
+  }) {
+    final candidates = <String, VideoCandidate>{};
+    final rejected = <String>{};
+    int? positiveInt(Object? value) {
+      final number = int.tryParse(value?.toString() ?? '');
+      return number != null && number > 0 ? number : null;
+    }
+
+    void add(String? raw, {String? key, Map<String, dynamic>? metadata}) {
+      if (raw == null) return;
+      final url = _entities(raw);
+      final uri = Uri.tryParse(url);
+      if (uri == null ||
+          !isFacebookMedia(uri) ||
+          rejected.contains(url) ||
+          candidates.length >= 32 && !candidates.containsKey(url)) {
+        return;
+      }
+      final path = uri.path.toLowerCase();
+      final kind = path.endsWith('.m3u8') || key == 'hls_manifest_url'
+          ? VideoSourceKind.hls
+          : path.endsWith('.mpd') || key == 'dash_manifest_url'
+          ? VideoSourceKind.dash
+          : VideoSourceKind.mp4;
+      if (kind == VideoSourceKind.mp4 &&
+          !path.endsWith('.mp4') &&
+          key == null) {
+        return;
+      }
+      final old = candidates[url];
+      final data = metadata ?? const <String, dynamic>{};
+      final audio = data['has_audio'];
+      final audioUrl = Uri.tryParse(
+        _entities(data['audio_url']?.toString() ?? ''),
+      );
+      final paired =
+          audioUrl != null && isFacebookMedia(audioUrl) && uri != audioUrl;
+      if (paired) candidates.remove(audioUrl.toString());
+      candidates[url] = VideoCandidate(
+        url: url,
+        kind: kind,
+        variant: old?.variant.isNotEmpty == true ? old!.variant : key ?? '',
+        width: positiveInt(data['width']) ?? old?.width,
+        height: positiveInt(data['height']) ?? old?.height,
+        fps:
+            frameRate((data['fps'] ?? data['frame_rate'])?.toString()) ??
+            old?.fps,
+        codec: (data['codec'] ?? data['codecs'])?.toString() ?? old?.codec,
+        bitrate: positiveInt(data['bitrate']) ?? old?.bitrate,
+        bytes:
+            positiveInt(data['content_length'] ?? data['filesize']) ??
+            old?.bytes,
+        hasAudio: paired
+            ? true
+            : audio is bool
+            ? audio
+            : old?.hasAudio,
+        video: paired ? [VideoPart(uri)] : old?.video,
+        audio: paired ? [VideoPart(audioUrl)] : old?.audio,
+      );
+    }
+
+    final recognized = RegExp(
+      r'"(playable_url(?:_quality_hd)?|browser_native_(?:hd|sd)_url|native_(?:hd|sd)_url|hls_manifest_url|dash_manifest_url|dash_manifest|base_url)"\s*:\s*("(?:\\.|[^"\\])*")',
+    );
+    // Read adjacent metadata only when the URL belongs to the same JSON object.
+    Map<String, dynamic>? objectAt(int index) {
+      var start = index - 1;
+      while (start >= 0 &&
+          index - start < 4096 &&
+          !'{}<>'.contains(html[start])) {
+        start--;
+      }
+      if (start < 0 || html[start] != '{') return null;
+      final end = html.indexOf('}', index);
+      if (end < 0 || end - start > 65536) return null;
+      try {
+        final object = jsonDecode(html.substring(start, end + 1));
+        return object is Map<String, dynamic> ? object : null;
+      } on FormatException {
+        return null;
+      }
+    }
+
+    final manifests = <VideoCandidate>[];
+    for (final match in recognized.allMatches(html)) {
+      final key = match[1]!;
+      final raw = jsonDecode(match[2]!) as String;
+      if (key == 'dash_manifest' && page != null) {
+        try {
+          manifests.addAll(dashCandidates(_entities(raw), page));
+        } on FormatException {
+          continue;
+        } on FacebookVideoException {
+          continue;
+        }
+        continue;
+      }
+      final object = objectAt(match.start);
+      final metadata =
+          key.endsWith('_hd') ||
+              key.contains('_hd_') ||
+              key.contains('_sd_') ||
+              object?['dash_manifest'] != null
+          ? null
+          : object;
+      if (object?['is_drm'] == true ||
+          object?['is_protected'] == true ||
+          object?['drm_info'] != null) {
+        rejected.add(_entities(raw));
+        candidates.remove(_entities(raw));
+        continue;
+      }
+      if (key == 'base_url' &&
+          !(raw.contains('.mpd') || raw.contains('.m3u8'))) {
+        continue;
+      }
+      add(raw, key: key, metadata: metadata);
+    }
+
+    final og = _meta(html, 'og:video:secure_url') ?? _meta(html, 'og:video');
+    final ogType = _meta(html, 'og:video:type');
+    add(
+      og,
+      key: ogType?.contains('mpegurl') == true
+          ? 'hls_manifest_url'
+          : ogType?.contains('dash+xml') == true
+          ? 'dash_manifest_url'
+          : ogType == 'video/mp4'
+          ? 'og:video'
+          : null,
+      metadata: {
+        'width': _meta(html, 'og:video:width'),
+        'height': _meta(html, 'og:video:height'),
+      },
+    );
+    for (final data in rendered) {
+      add(data['url']?.toString(), key: 'dom', metadata: data);
+    }
+    if (candidates.isEmpty && manifests.isEmpty && rejected.isEmpty) {
+      final unescaped = html.replaceAll(r'\/', '/').replaceAll(r'\u0026', '&');
+      for (final match in RegExp(
+        r'''https://[^\s"'<>\\]+?\.(?:mp4|m3u8|mpd)(?:\?[^\s"'<>\\]+)?''',
         caseSensitive: false,
-      ),
+      ).allMatches(unescaped).take(24)) {
+        add(match[0]);
+      }
+    }
+    final options = [...candidates.values, ...manifests]
+      ..sort(VideoCandidate.compare);
+    final thumb = Uri.tryParse(_meta(html, 'og:image') ?? '');
+    return VideoInfo(
+      candidates: options,
+      thumbnailUrl: thumb != null && isFacebookMedia(thumb)
+          ? thumb.toString()
+          : null,
+      title: _title(html),
+    );
+  }
+
+  String? _title(String html) {
+    for (final raw in [
+      _meta(html, 'og:title'),
       RegExp(
-        '<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']$property["\']',
+        r'<title>([^<]+)</title>',
         caseSensitive: false,
-      ),
-    ];
-    for (final p in patterns) {
-      final m = p.firstMatch(html);
-      if (m != null) return _fullyDecode(m.group(1)!);
+      ).firstMatch(html)?[1],
+      _meta(html, 'og:description')?.split(RegExp(r'[\r\n]+')).first,
+    ]) {
+      final title = _entities(raw ?? '')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .replaceAll(
+            RegExp(r'\s*[|\-–—]\s*Facebook\s*$', caseSensitive: false),
+            '',
+          )
+          .trim();
+      if (title.isNotEmpty && title.toLowerCase() != 'facebook') return title;
     }
     return null;
   }
 
-  /// Đoán chất lượng từ URL: 1080/720/480/360, hoặc hd/sd.
-  int _qualityScore(String url) {
-    final lower = url.toLowerCase();
-    for (final res in [1080, 720, 480, 360, 240]) {
-      if (lower.contains(res.toString())) return res;
+  String? _meta(String html, String property) {
+    for (final match in RegExp(
+      r'<meta\b[^>]+>',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      final attributes = {
+        for (final attr in RegExp(
+          r'''([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')''',
+        ).allMatches(match[0]!))
+          attr[1]!.toLowerCase(): attr[2] ?? attr[3]!,
+      };
+      if ((attributes['property'] ?? attributes['name']) == property) {
+        final value = attributes['content'];
+        return value == null ? null : _entities(value);
+      }
     }
-    if (lower.contains('hd')) return 720;
-    if (lower.contains('sd')) return 360;
-    return 0;
+    return null;
   }
 
-  String _qualityLabel(String url) {
-    final score = _qualityScore(url);
-    if (score >= 1080) return 'Full HD 1080p';
-    if (score >= 720) return 'HD 720p';
-    if (score >= 480) return '480p';
-    if (score > 0) return '${score}p';
-    return 'Video';
-  }
+  String _entities(String value) => value.replaceAllMapped(
+    RegExp(r'&(?:amp|quot|apos|lt|gt|#x[0-9a-fA-F]+|#\d+);'),
+    (m) {
+      final key = m[0]!.substring(1, m[0]!.length - 1);
+      final number = key.startsWith('#x')
+          ? int.tryParse(key.substring(2), radix: 16)
+          : key.startsWith('#')
+          ? int.tryParse(key.substring(1))
+          : null;
+      return switch (key) {
+        'amp' => '&',
+        'quot' => '"',
+        'apos' => "'",
+        'lt' => '<',
+        'gt' => '>',
+        _ =>
+          number != null && number > 0 && number <= 0x10ffff
+              ? String.fromCharCode(number)
+              : m[0]!,
+      };
+    },
+  );
 }

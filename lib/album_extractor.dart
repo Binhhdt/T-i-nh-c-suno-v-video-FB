@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'facebook_video_http.dart' show isFacebookPage, canSendFacebookCookie;
+
 /// Một ảnh trong album / bài viết nhiều ảnh.
 class AlbumPhoto {
   const AlbumPhoto({
@@ -52,7 +54,7 @@ class AlbumInfo {
 
   final List<AlbumPhoto> photos;
 
-  /// Bộ ảnh của bài ("pcb.<id bài>") — để mở trang bộ ảnh lấy nốt ảnh
+  /// Bộ ảnh của bài ("`pcb.<id bài>`") — để mở trang bộ ảnh lấy nốt ảnh
   /// khi dữ liệu bài viết chỉ có một phần.
   final String? setId;
 
@@ -95,7 +97,7 @@ class AlbumFeedRedirectException extends AlbumNotFoundException {
 /// 2. Trang đích là Bảng tin / trang chủ / đăng nhập -> DỪNG, báo lỗi.
 /// 3. Chỉ lấy ảnh thuộc ĐÚNG bài viết: ưu tiên khối dữ liệu
 ///    `all_subattachments` của bài; nếu không có thì chỉ lấy ảnh có link
-///    trỏ về đúng bộ ảnh (set=pcb.<id bài> / set=a.<id album>).
+///    trỏ về đúng bộ ảnh (`set=pcb.<id bài>` / `set=a.<id album>`).
 class FacebookAlbumExtractor {
   FacebookAlbumExtractor({http.Client? client})
       : _client = client ?? http.Client();
@@ -245,10 +247,13 @@ class FacebookAlbumExtractor {
   }) async {
     var current = Uri.parse(url);
     for (var hop = 0; hop <= maxHops; hop++) {
+      if (!isFacebookPage(current)) {
+        throw const AlbumNotFoundException('Facebook chuyển hướng đến địa chỉ không hợp lệ.');
+      }
       final req = http.Request('GET', current)
         ..followRedirects = false
         ..headers.addAll(_headers);
-      if (cookieHeader != null && cookieHeader.isNotEmpty) {
+      if (cookieHeader != null && cookieHeader.isNotEmpty && canSendFacebookCookie(current)) {
         req.headers['Cookie'] = cookieHeader;
       }
       final streamed =
@@ -262,7 +267,7 @@ class FacebookAlbumExtractor {
         // biết link thật của bài viết.
         if (isLoginUrl(current.toString())) {
           final next = current.queryParameters['next'];
-          if (next != null && next.startsWith('http')) {
+          if (next != null && isFacebookPage(Uri.tryParse(next) ?? Uri())) {
             return (status: 401, body: '', finalUrl: next);
           }
           return (status: 401, body: '', finalUrl: current.toString());
@@ -403,7 +408,7 @@ class FacebookAlbumExtractor {
     );
   }
 
-  /// "pcb.<id>" xuất hiện nhiều nhất trong HTML (bộ ảnh của bài chính).
+  /// "`pcb.<id>`" xuất hiện nhiều nhất trong HTML (bộ ảnh của bài chính).
   static String? dominantPcbSet(String html) {
     final freq = <String, int>{};
     for (final m in RegExp(r'pcb\.(\d{5,})').allMatches(html)) {
@@ -747,7 +752,7 @@ class FacebookAlbumExtractor {
     return out;
   }
 
-  /// id bài viết (số) — để mở trang bộ ảnh set=pcb.<id>.
+  /// id bài viết (số) — để mở trang bộ ảnh `set=pcb.<id>`.
   static String? postIdFromHtml(String html) {
     final patterns = [
       RegExp(r'set=pcb\.(\d+)'),

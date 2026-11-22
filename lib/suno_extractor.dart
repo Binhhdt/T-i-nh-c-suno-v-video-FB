@@ -19,8 +19,8 @@ class SunoSongInfo {
   final String? videoUrl;
 
   /// ID clip Suno (UUID) — cần để xin quyền giải mã file audio
-  /// (POST /api/mango/rights). Lấy từ URL audio (/clip/<uuid>) hoặc
-  /// og:url (/song/<uuid>). Null nếu không xác định được.
+  /// (POST /api/mango/rights). Lấy từ URL audio (`/clip/<uuid>`) hoặc
+  /// og:url (`/song/<uuid>`). Null nếu không xác định được.
   final String? clipId;
 
   const SunoSongInfo({
@@ -155,8 +155,8 @@ class SunoExtractor {
     );
   }
 
-  /// ID clip (UUID) từ URL audio (/clip/<uuid>.m4a) hoặc og:url
-  /// (/song/<uuid>). Cần để xin quyền giải mã file audio.
+  /// ID clip (UUID) từ URL audio (`/clip/<uuid>.m4a`) hoặc og:url
+  /// (`/song/<uuid>`). Cần để xin quyền giải mã file audio.
   String? _extractClipId(String html, String audioUrl) {
     final uuidPattern =
         RegExp(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}');

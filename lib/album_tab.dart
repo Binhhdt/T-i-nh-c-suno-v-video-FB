@@ -74,7 +74,7 @@ class _AlbumTabState extends State<_AlbumTab> {
 
   Future<void> _openLogin() async {
     await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const _FacebookLoginPage()),
+      MaterialPageRoute(builder: (_) => const FacebookLoginPage()),
     );
     await _refreshLogin();
     if (!mounted) return;
@@ -181,7 +181,7 @@ class _AlbumTabState extends State<_AlbumTab> {
     if (info == null || info.photos.isEmpty) {
       _setStatus('Đang mở trang trong trình duyệt...');
       final result = await Navigator.of(context).push<_AlbumWebResult>(
-        MaterialPageRoute(builder: (_) => _AlbumExtractPage(url: url)),
+        MaterialPageRoute(builder: (_) => _AlbumExtractPage(url: url, initial: info)),
       );
       if (!mounted) return;
       if (result?.info != null && result!.info!.photos.isNotEmpty) {
@@ -1184,7 +1184,7 @@ class _AlbumExtractPageState extends State<_AlbumExtractPage> {
 }
 
 /// Duyệt trình xem ảnh của bài trong WebView: mở ảnh đầu của bộ ảnh
-/// (set=pcb.<id bài>), đọc ảnh đang hiện, bấm "ảnh tiếp theo", lặp lại
+/// (`set=pcb.<id bài>`), đọc ảnh đang hiện, bấm "ảnh tiếp theo", lặp lại
 /// đến khi quay về ảnh đã gặp / đủ số ảnh / không chuyển được nữa.
 /// Mỗi ảnh chỉ nhận khi tên file ảnh khớp fbid trên thanh địa chỉ.
 class _PhotoWalkPage extends StatefulWidget {

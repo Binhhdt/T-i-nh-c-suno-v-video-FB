@@ -1,46 +1,20 @@
 name: Build APK
 
 on:
+  pull_request:
+    branches: [main, master]
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Nếu repo có file source.zip (mã nguồn đầy đủ) thì giải nén ra,
-      # ghi đè lên file cũ -> luôn đủ thư mục android/, lib/, pubspec.yaml.
-      - name: Giải nén source.zip
-        run: |
-          if [ -f source.zip ]; then
-            unzip -o -q source.zip -d .
-            echo "Đã giải nén source.zip"
-          fi
-          echo "--- Kiểm tra file quan trọng ---"
-          ls -la
-          ls android/app/src/main/AndroidManifest.xml
-          ls pubspec.yaml lib/main.dart
-
-      # Ghi lại android/gradlew chuẩn (bản cũ bị sửa trỏ vào /home/hatch/...
-      # nên GitHub báo "not found"). Bước này luôn chạy, không phụ thuộc zip.
-      - name: Sửa gradlew
-        run: |
-          cat > android/gradlew <<'SCRIPT'
-          #!/bin/sh
-          APP_HOME=$(cd "$(dirname "$0")" && pwd -P)
-          exec java $JAVA_OPTS $GRADLE_OPTS -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
-          SCRIPT
-          sed -i 's/^          //' android/gradlew
-          chmod +x android/gradlew
-          echo "--- gradlew mới ---"
-          cat android/gradlew
-          ls -la android/gradle/wrapper/
 
       - uses: actions/setup-java@v4
         with:
@@ -49,18 +23,63 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.9'
           cache: true
 
-      - run: flutter pub get
-      - run: flutter test
-        continue-on-error: true
-      - run: flutter build apk --release
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter analyze --no-pub
+      - name: Cài công cụ kiểm thử media
+        run: command -v ffmpeg && command -v ffprobe || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+      - run: flutter test --no-pub
 
-      # Đưa APK lên mục Releases (không tốn dung lượng Artifacts).
+      - name: Kiểm tra APK release
+        if: github.event_name == 'pull_request' || (github.ref_name != 'main' && github.ref_name != 'master')
+        env:
+          ANDROID_VERIFY_BUILD: 'true'
+        run: flutter build apk --release --no-pub
+
+      - name: Ký APK phát hành
+        if: github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master')
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing repository secret $name"
+              exit 1
+            fi
+          done
+          umask 077
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release-key.jks"
+          trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          unset ANDROID_KEYSTORE_BASE64
+          flutter build apk --release --no-pub
+
+      - name: Chuẩn bị APK phát hành
+        if: github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master')
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 1
+
+  release:
+    if: github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-release
       - name: Đổi tên APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk "TaiVideoNhac-v${{ github.run_number }}.apk"
-
+        run: mv app-release.apk "TaiVideoNhac-v${{ github.run_number }}.apk"
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}

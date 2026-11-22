@@ -26,21 +26,22 @@ void main() {
 </body></html>
 ''';
     final info = extractor.parseHtml(html);
-    // Trùng nhau bị loại, còn 2 bản; bản HD 720 lên đầu.
+    // Trùng nhau bị loại; tên URL không xác định chất lượng.
     expect(info.candidates.length, 2);
-    expect(info.best.qualityLabel, 'HD 720p');
-    expect(info.best.url.contains('720'), isTrue);
+    expect(info.candidates.every((c) => c.qualityScore == 0), isTrue);
   });
 
   test('Không có mp4 -> báo lỗi tiếng Việt rõ ràng', () {
     const html = '<html><body>Không có video ở đây</body></html>';
     expect(
       () => extractor.parseHtml(html),
-      throwsA(isA<VideoNotFoundException>().having(
-        (e) => e.message,
-        'message',
-        contains('Không tìm thấy video'),
-      )),
+      throwsA(
+        isA<VideoNotFoundException>().having(
+          (e) => e.message,
+          'message',
+          contains('Không tìm thấy video'),
+        ),
+      ),
     );
   });
 
@@ -51,7 +52,7 @@ void main() {
       'https://scontent.fbcdn.net/v/video_360.mp4?x=2',
     ]);
     expect(info.candidates.length, 2);
-    expect(info.best.qualityLabel, 'HD 720p');
+    expect(info.best.qualityLabel, 'Chưa rõ độ phân giải');
   });
 
   test('parseRenderedPage dedupe src DOM trùng link trong HTML', () {

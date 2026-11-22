@@ -45,10 +45,8 @@ class _PdfTabState extends State<PdfTab> with AutomaticKeepAliveClientMixin {
   Future<void> _pick() async {
     final files = <PlatformFile>[];
     try {
-      // file_picker 12+: trả thẳng List<PlatformFile>; `...?` chạy được
-      // dù bản thư viện trả List hay List? (null = huỷ).
       final raw = await FilePicker.pickFiles(type: FileType.image);
-      files.addAll([...?raw]);
+      files.addAll(raw);
     } catch (e) {
       if (!mounted) return;
       setState(() {

@@ -1,4 +1,5 @@
 /// Dữ liệu dùng chung cho tab "Truyện" (downloader trang chapter tổng quát).
+library;
 
 /// 1 trang (ảnh) của chapter, đã xếp đúng thứ tự.
 class ChapterImage {

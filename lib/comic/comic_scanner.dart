@@ -106,7 +106,7 @@ class ComicScanner {
 
   /// Chọn link ảnh tốt nhất cho 1 thẻ <img>:
   /// data-* lazy -> data-srcset -> data-* bất kỳ có link ảnh -> srcset ->
-  /// <picture><source srcset> -> src -> currentSrc. Bỏ ảnh giữ chỗ.
+  /// `<picture>``<source srcset>` -> src -> currentSrc. Bỏ ảnh giữ chỗ.
   static String? pickImgUrl(
     Map<String, dynamic> attrs,
     String currentSrc,
