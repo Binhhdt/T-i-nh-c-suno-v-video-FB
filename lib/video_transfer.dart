@@ -456,8 +456,7 @@ extension FacebookVideoTransfer on VideoDownloader {
       final length = await reader.length();
       var offset = 0;
       final boxes = <String>{};
-      while (offset + 8 <= length) {
-        if (boxes.length > 128) break;
+      for (var count = 0; offset + 8 <= length && count < 20000; count++) {
         await reader.setPosition(offset);
         final sizeBytes = await reader.read(4);
         final type = String.fromCharCodes(await reader.read(4));

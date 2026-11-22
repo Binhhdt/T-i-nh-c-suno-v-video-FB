@@ -33,13 +33,13 @@ jobs:
       - run: flutter test --no-pub
 
       - name: Kiểm tra APK release
-        if: github.event_name == 'pull_request' || (github.ref_name != 'main' && github.ref_name != 'master')
+        if: github.event_name == 'pull_request'
         env:
           ANDROID_VERIFY_BUILD: 'true'
         run: flutter build apk --release --no-pub
 
       - name: Ký APK phát hành
-        if: github.event_name != 'pull_request' && (github.ref_name == 'main' || github.ref_name == 'master')
+        if: github.event_name != 'pull_request'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}

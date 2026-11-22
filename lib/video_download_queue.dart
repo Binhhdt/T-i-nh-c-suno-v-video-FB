@@ -33,6 +33,8 @@ class VideoJob {
     this.saved,
     this.warning,
     this.error,
+    this.received = 0,
+    this.total,
   });
 
   final String id;
@@ -44,7 +46,7 @@ class VideoJob {
   String? saved;
   String? warning;
   String? error;
-  int received = 0;
+  int received;
   int? total;
   double speed = 0;
   final stopwatch = Stopwatch();
@@ -54,8 +56,16 @@ class VideoJob {
       state == VideoJobState.queued ||
       state == VideoJobState.saving;
   String get filename {
-    final cleaned = sanitizeSongTitle(title);
-    return cleaned.isEmpty ? 'fb_video_$id.mp4' : '$cleaned.mp4';
+    final name = StringBuffer();
+    var bytes = 0;
+    for (final rune in sanitizeSongTitle(title).runes) {
+      final character = String.fromCharCode(rune);
+      final length = utf8.encode(character).length;
+      if (bytes + length > 200) break;
+      name.write(character);
+      bytes += length;
+    }
+    return name.isEmpty ? 'fb_video_$id.mp4' : '$name.mp4';
   }
 
   Map<String, Object?> toJson() => {
@@ -68,6 +78,8 @@ class VideoJob {
     'saved': saved,
     'warning': warning,
     'error': error,
+    'received': received,
+    'total': total,
   };
 
   factory VideoJob.fromJson(Map<String, dynamic> json) {
@@ -86,6 +98,8 @@ class VideoJob {
       saved: json['saved'] as String?,
       warning: json['warning'] as String?,
       error: json['error'] as String?,
+      received: json['received'] as int? ?? 0,
+      total: json['total'] as int?,
     );
   }
 }

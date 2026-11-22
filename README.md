@@ -22,7 +22,7 @@ GitHub Actions build trực tiếp từ mã nguồn Git bằng Flutter 3.47.9. A
 
 Bản phát hành trên nhánh chính dùng bốn Actions Secrets cùng bộ khóa phát hành hiện có:
 
-- ANDROID_KEYSTORE_BASE64 chứa keystore đã mã hóa Base64.
+- ANDROID_KEYSTORE_BASE64 chứa nội dung Base64 của keystore.
 - ANDROID_KEYSTORE_PASSWORD chứa mật khẩu keystore.
 - ANDROID_KEY_ALIAS chứa tên khóa.
 - ANDROID_KEY_PASSWORD chứa mật khẩu khóa.

@@ -69,16 +69,20 @@ internal class VideoStorage(private val app: Context) {
         val uri = Uri.parse(entry.getString("uri"))
         val path = entry.optString("path").ifEmpty { null }
         val mediaStore = entry.optBoolean("mediaStore")
+        val result = mapOf("uri" to uri.toString(), "warning" to entry.optString("warning").ifEmpty { null })
+        if (entry.optBoolean("done")) return result
         val pending = if (mediaStore && Build.VERSION.SDK_INT >= 29) {
             resolver.query(uri, arrayOf(MediaStore.MediaColumns.IS_PENDING), null, null, null)
                 ?.use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) != 0 else null }
         } else null
         val expected = entry.getLong("bytes")
-        val actual = if (path != null) File(path).let { if (it.isFile) it.length() else -1 }
-            else resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1
-        if (entry.optBoolean("done") ||
-            (entry.optBoolean("copied") || actual == expected) && pending != true) {
-            return mapOf("uri" to uri.toString(), "warning" to entry.optString("warning").ifEmpty { null })
+        val size = if (path != null) File(path).let { if (it.isFile) it.length() else -1 }
+            else try {
+                resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1
+            } catch (_: java.io.FileNotFoundException) { -1 }
+        if (entry.optBoolean("copied") || size == expected) {
+            if (pending == true && Build.VERSION.SDK_INT >= 29) publish(uri)
+            return result
         }
         remove(Target(uri, path, mediaStore))
         forget(id)
@@ -157,9 +161,7 @@ internal class VideoStorage(private val app: Context) {
             entry.put("copied", true)
             save()
             if (target.mediaStore && Build.VERSION.SDK_INT >= 29) {
-                check(resolver.update(target.uri, ContentValues().apply {
-                    put(MediaStore.MediaColumns.IS_PENDING, 0)
-                }, null, null) == 1)
+                publish(target.uri)
             }
             entry.put("done", true)
             save()
@@ -194,6 +196,13 @@ internal class VideoStorage(private val app: Context) {
 
     private fun numbered(name: String, index: Int): String =
         if (index == 0) name else "${name.removeSuffix(".mp4")} ($index).mp4"
+
+    @android.annotation.TargetApi(29)
+    private fun publish(uri: Uri) {
+        check(resolver.update(uri, ContentValues().apply {
+            put(MediaStore.MediaColumns.IS_PENDING, 0)
+        }, null, null) == 1)
+    }
 
     @android.annotation.TargetApi(29)
     private fun createMediaStore(name: String): Target {
