@@ -198,4 +198,79 @@ void main() {
       'https://www.facebook.com/a/posts/pfbid1?x=1&y=2',
     );
   });
+
+  group('bỏ ảnh trùng', () {
+    test('cùng 1 ảnh nhưng 2 nguồn đặt id khác nhau -> chỉ giữ 1', () {
+      const big =
+          'https://scontent.x.fbcdn.net/v/t39.30808-6/111_555_222_n.jpg?oh=1';
+      const small =
+          'https://scontent.x.fbcdn.net/v/t39.30808-6/111_555_222_n.jpg?stp=dst-jpg_s206x206&oh=1';
+      final a = [
+        const AlbumPhoto(id: '555', url: big, thumbUrl: small, width: 2048, height: 1536),
+        const AlbumPhoto(
+          id: '556',
+          url: 'https://scontent.x.fbcdn.net/v/t39.30808-6/111_556_222_n.jpg',
+          thumbUrl: 'https://scontent.x.fbcdn.net/v/t39.30808-6/111_556_222_n.jpg',
+        ),
+      ];
+      final b = [
+        // cùng ảnh 555 nhưng id lạ (vd tên file) -> phải bị gộp
+        const AlbumPhoto(id: '111_555_222_n.jpg', url: small, thumbUrl: small),
+        const AlbumPhoto(
+          id: '557',
+          url: 'https://scontent.x.fbcdn.net/v/t39.30808-6/111_557_222_n.jpg',
+          thumbUrl: 'https://scontent.x.fbcdn.net/v/t39.30808-6/111_557_222_n.jpg',
+        ),
+      ];
+      final merged = FacebookAlbumExtractor.mergePhotos(a, b);
+      expect(merged.map((p) => p.id).toList(), ['555', '556', '557']);
+      expect(merged.first.width, 2048); // giữ bản lớn
+    });
+
+    test('ảnh giữ chỗ (rsrc.php) không làm gộp nhầm 2 ảnh khác nhau', () {
+      const placeholder = 'https://static.xx.fbcdn.net/rsrc.php/v3/x.png';
+      final merged = FacebookAlbumExtractor.dedupePhotos(const [
+        AlbumPhoto(id: '1', url: placeholder, thumbUrl: placeholder),
+        AlbumPhoto(id: '2', url: placeholder, thumbUrl: placeholder),
+      ]);
+      expect(merged.length, 2);
+    });
+
+    test('dHash + hamming: ảnh giống nhau = 0, ảnh khác nhau lớn', () {
+      final g1 = List<int>.generate(17 * 16, (i) => (i * 37) % 251);
+      final g2 = List<int>.generate(17 * 16, (i) => 250 - (i * 37) % 251);
+      final h1 = FacebookAlbumExtractor.dHashFromGray(g1, 17, 16);
+      final h1b = FacebookAlbumExtractor.dHashFromGray(g1, 17, 16);
+      final h2 = FacebookAlbumExtractor.dHashFromGray(g2, 17, 16);
+      expect(h1.length, 256);
+      expect(FacebookAlbumExtractor.hammingDistance(h1, h1b), 0);
+      expect(FacebookAlbumExtractor.hammingDistance(h1, h2), greaterThan(100));
+    });
+  });
+
+  group('duyệt trình xem ảnh', () {
+    test('đọc id ảnh kế tiếp, bỏ qua id ảnh hiện tại', () {
+      const html = '"prevMediaBeforeNodeId":{"__typename":"Photo","id":"10"},'
+          '"nextMediaAfterNodeId":{"__typename":"Photo","id":"12"}';
+      expect(FacebookAlbumExtractor.nextPhotoIdFromHtml(html, '11'), '12');
+      expect(FacebookAlbumExtractor.nextPhotoIdFromHtml('{}', '11'), isNull);
+    });
+
+    test('bộ ảnh pcb xuất hiện nhiều nhất là bộ ảnh của bài', () {
+      const html = 'set=pcb.111111 set=pcb.222222 set=pcb.222222 '
+          '"set":"pcb.222222"';
+      expect(FacebookAlbumExtractor.dominantPcbSet(html), 'pcb.222222');
+      expect(FacebookAlbumExtractor.dominantPcbSet('không có'), isNull);
+    });
+  });
+
+  test('bestImageForPhotoId: tên file không chứa fbid -> lấy ảnh lớn cạnh "id"', () {
+    const html = '{"__typename":"Photo","id":"777",'
+        '"image":{"uri":"https:\\/\\/scontent.x.fbcdn.net\\/v\\/t39.30808-6\\/abc_n.jpg","width":1536,"height":2048}}'
+        '{"__typename":"Photo","id":"888",'
+        '"image":{"uri":"https:\\/\\/scontent.x.fbcdn.net\\/v\\/t39.30808-6\\/zzz_n.jpg","width":100,"height":100}}';
+    final p = FacebookAlbumExtractor().bestImageForPhotoId(html, '777');
+    expect(p, isNotNull);
+    expect(p!.width, 1536);
+  });
 }

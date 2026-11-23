@@ -1,0 +1,5 @@
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="private_videos" path="exported-videos/" />
+    <external-files-path name="app_external_videos" path="." />
+    <external-path name="external_videos" path="." />
+</paths>
