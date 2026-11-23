@@ -177,7 +177,13 @@ internal class VideoStorage(private val app: Context) {
         val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
         val existing = resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
-            null, null, null)?.use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+            null, null, null)?.use { cursor ->
+                buildSet<String> {
+                    while (cursor.moveToNext()) {
+                        cursor.getString(0)?.let { add(it) }
+                    }
+                }
+            }
             ?: throw IOException()
         val unique = generateSequence(0) { it + 1 }.map { numbered(name, it) }
             .first { it !in existing }
